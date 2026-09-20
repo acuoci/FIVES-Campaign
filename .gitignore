@@ -1,0 +1,81 @@
+# macOS and editor metadata
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# C/C++ build products
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+cfdf
+cfdf_test
+
+# Generated campaign folders at repository root.
+# Keep templates/FUEL tracked; generated runs live in root-level FUEL/a_... folders.
+/CH4/
+/C2H4/
+/C3H8/
+/C7H8/
+
+# Large example/result datasets
+/examples/
+
+# Generated campaign files and logs
+**/Run.sh
+**/RunAll.sh
+**/Campaign.log
+**/CampaignStatus.csv
+**/StepStatus.csv
+**/Run.log
+**/Run.stdout
+**/Run.stderr
+**/status.txt
+**/pid.txt
+**/exit_code.txt
+**/last_update.txt
+**/max_temperature_K.txt
+**/max_temperature.err
+**/log.out
+**/log.err
+**/BzzFile.txt
+**/PolimiSootModel.out
+**/definition.json
+**/input.dic
+**/Output/
+
+# OpenSMOKE++ and post-processing outputs
+*.out
+*.err
+*.log
+CFDF_results*.csv
+Step*_metrics*.csv
+Step*_by_*.png
+Step*_Tmax*.png
+Step*_COxmax*.png
+*.pdf
+
+# Temporary files
+tmp/
+temp/

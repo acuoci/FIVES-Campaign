@@ -1,0 +1,202 @@
+//-----------------------------------------------------------------//
+//     ____                    ______ __  __  ____  _  ________    //
+//    / __ \                  /  ___ |  \/  |/ __ \| |/ /  ____|   //
+//   | |  | |_ __   ___ _ __ |  (___ | \  / | |  | | ' /| |__      //
+//   | |  | | '_ \ / _ \ '_ \ \___  \| |\/| | |  | |  < |  __|     //
+//   | |__| | |_) |  __/ | | |____)  | |  | | |__| | . \| |____    //
+//    \____/| .__/ \___|_| |_|______/|_|  |_|\____/|_|\_\______|   //
+//         | |                                                     //
+//         |_|                                                     //
+//                                                                 //
+//                http://www.opensmoke.polimi.it/                  //
+//             http://creckmodeling.chem.polimi.it/                //
+//-----------------------------------------------------------------//
+
+Dictionary CounterFlowFlame1D
+{
+	@Type				CounterFlowDiffusion;
+	@KineticsFolder		/home/chimica2/cuoci/MyRuns/FIVES/KineticMechanisms/GRI30-noNOX/kinetics-GRI30-noNOX; 
+	
+	// Output folder
+	@Output			Output;
+
+	// Fuel and oxidizer stream data (BCs)
+	@FuelStream 		fuel-stream;
+	@OxidizerStream		oxidizer-stream;
+	@FuelVelocity		$VFUEL$  	cm/s;
+	@OxidizerVelocity	$VOX$	cm/s;
+	
+	// Adaptive grid
+	@Grid			grid;	
+	
+	// First-guess solution data (not very relevant)
+	@InitialTemperatureProfile 	T-Profile;	
+	@EigenValueStartingGuess	-200 kg/m3/s2;
+	@PeakMixture				peak-mixture;
+	@InitialProfiles			linear;
+	@PeakPosition				1 mm;
+	@MixingZoneWidth			3 mm;
+
+	// Numerical parameters
+	@UseNlsSolver				false;
+	@UseDaeSolver				true;
+	@DaeParameters				dae-parameters;
+
+	// Physical sub-models
+	@Soret    					true;
+	@Radiation					true;
+	@EnvironmentTemperature		293 K;
+}
+
+Dictionary fuel-stream
+{
+	@Masses       C3H8 $Y1FUEL$
+				  H2O $Y1H2O$
+				  O2  $Y1O2$
+				  N2  $Y1N2$; 
+
+	@Temperature	$TFUEL$ K;
+	@Pressure		1 atm;
+}
+
+Dictionary oxidizer-stream
+{
+	@Masses		H2O	$Y2H2O$
+      			O2	$YO2$
+      			N2 	$Y2N2$;
+					
+	@Temperature	$TOX$ K;
+	@Pressure		1 atm;
+}
+
+Dictionary peak-mixture
+{
+	@Moles		CO2 0.15 
+				H2O 0.15 
+				N2  0.70;
+					
+	@Temperature	2300 K;
+
+	@Pressure	1 atm;
+}
+
+Dictionary grid
+{
+	@Length			1.5 cm;
+	@InitialPoints	80;				
+	@Type			equispaced;
+	
+	@MaxPoints				80;		
+	@MaxAdaptivePoints		30;
+	@GradientCoefficient	0.05;
+	@CurvatureCoefficient	0.5;
+
+	@Threshold		1e-5;		
+}
+
+Dictionary dae-parameters
+{
+	@DaeSolver		OpenSMOKE++;
+	@RelativeTolerance	1e-6;
+	@AbsoluteTolerance	1e-12;
+}
+
+Dictionary T-Profile
+{	
+	@XVariable length;
+	@YVariable temperature;
+		
+	@XUnits cm;
+	@YUnits K;
+		
+	@Profile
+0.0000E+00	2.9300E+02
+1.8987E-02	2.9300E+02
+3.7975E-02	2.9300E+02
+5.6962E-02	2.9300E+02
+7.5949E-02	2.9301E+02
+9.4937E-02	2.9302E+02
+1.1392E-01	2.9303E+02
+1.3291E-01	2.9307E+02
+1.5190E-01	2.9313E+02
+1.7089E-01	2.9326E+02
+1.8987E-01	2.9350E+02
+2.0886E-01	2.9394E+02
+2.2785E-01	2.9476E+02
+2.4684E-01	2.9624E+02
+2.6582E-01	2.9884E+02
+2.8481E-01	3.0329E+02
+3.0380E-01	3.1063E+02
+3.2278E-01	3.2225E+02
+3.4177E-01	3.3975E+02
+3.6076E-01	3.6468E+02
+3.7975E-01	3.9816E+02
+3.9873E-01	4.4062E+02
+4.1772E-01	4.9177E+02
+4.3671E-01	5.5084E+02
+4.5570E-01	6.1686E+02
+4.7468E-01	6.8883E+02
+4.9367E-01	7.6583E+02
+5.1266E-01	8.4702E+02
+5.3165E-01	9.3164E+02
+5.5063E-01	1.0189E+03
+5.6962E-01	1.1082E+03
+5.8861E-01	1.1987E+03
+6.0759E-01	1.2899E+03
+6.2658E-01	1.3812E+03
+6.4557E-01	1.4720E+03
+6.6456E-01	1.5618E+03
+6.8354E-01	1.6502E+03
+7.0253E-01	1.7367E+03
+7.2152E-01	1.8211E+03
+7.4051E-01	1.9030E+03
+7.5949E-01	1.9823E+03
+7.7848E-01	2.0588E+03
+7.9747E-01	2.1329E+03
+8.1646E-01	2.2051E+03
+8.3544E-01	2.2766E+03
+8.5443E-01	2.3487E+03
+8.7342E-01	2.4222E+03
+8.9241E-01	2.4961E+03
+9.1139E-01	2.5611E+03
+9.3038E-01	2.5841E+03
+9.4937E-01	2.5395E+03
+9.6835E-01	2.4695E+03
+9.8734E-01	2.3795E+03
+1.0063E+00	2.2664E+03
+1.0253E+00	2.1301E+03
+1.0443E+00	1.9732E+03
+1.0633E+00	1.8002E+03
+1.0823E+00	1.6173E+03
+1.1013E+00	1.4312E+03
+1.1203E+00	1.2485E+03
+1.1392E+00	1.0751E+03
+1.1582E+00	9.1527E+02
+1.1772E+00	7.7230E+02
+1.1962E+00	6.4868E+02
+1.2152E+00	5.4622E+02
+1.2342E+00	4.6553E+02
+1.2532E+00	4.0557E+02
+1.2722E+00	3.6358E+02
+1.2911E+00	3.3577E+02
+1.3101E+00	3.1822E+02
+1.3291E+00	3.0754E+02
+1.3481E+00	3.0124E+02
+1.3671E+00	2.9760E+02
+1.3861E+00	2.9553E+02
+1.4051E+00	2.9437E+02
+1.4241E+00	2.9372E+02
+1.4430E+00	2.9336E+02
+1.4620E+00	2.9317E+02
+1.4810E+00	2.9306E+02
+1.5000E+00	2.9300E+02	;
+}
+
+Dictionary definition
+{
+    @Alpha $ALPHA$;
+    @Beta  $BETA$;
+    @Gamma $GAMMA$;
+
+    @StrainRate $STRAINRATE$ 1/s;
+}

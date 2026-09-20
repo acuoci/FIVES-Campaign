@@ -1,0 +1,158 @@
+//-----------------------------------------------------------------//
+//     ____                    ______ __  __  ____  _  ________    //
+//    / __ \                  /  ___ |  \/  |/ __ \| |/ /  ____|   //
+//   | |  | |_ __   ___ _ __ |  (___ | \  / | |  | | ' /| |__      //
+//   | |  | | '_ \ / _ \ '_ \ \___  \| |\/| | |  | |  < |  __|     //
+//   | |__| | |_) |  __/ | | |____)  | |  | | |__| | . \| |____    //
+//    \____/| .__/ \___|_| |_|______/|_|  |_|\____/|_|\_\______|   //
+//         | |                                                     //
+//         |_|                                                     //
+//                                                                 //
+//                http://www.opensmoke.polimi.it/                  //
+//             http://creckmodeling.chem.polimi.it/                //
+//-----------------------------------------------------------------//
+
+Dictionary CounterFlowFlame1D
+{
+	@Backup				../Step04/Output/Output.xml;
+
+	@Type				CounterFlowDiffusion;
+	@KineticsFolder		/home/chimica2/cuoci/MyRuns/FIVES/KineticMechanisms/CRECK_2012_Soot_OnlyBINJ_NoHeavyFuels/kinetics-CRECK_2012_SootOnlyBINJ-SP-AGG; 
+	
+	// Output folder
+	@Output			Output;
+
+	// Fuel and oxidizer stream data (BCs)
+	@FuelStream 		fuel-stream;
+	@OxidizerStream		oxidizer-stream;
+	@FuelVelocity		$VFUEL$  	cm/s;
+	@OxidizerVelocity	$VOX$	cm/s;
+	
+	// Adaptive grid
+	@Grid			grid;	
+	
+	// First-guess solution data (not very relevant)
+	@EigenValueStartingGuess	-200 kg/m3/s2;
+	@PeakMixture				peak-mixture;
+	@InitialProfiles			linear;
+	@PeakPosition				1 mm;
+	@MixingZoneWidth			3 mm;
+
+	// Numerical parameters
+	@UseNlsSolver				false;
+	@UseDaeSolver				true;
+	@DaeParameters				dae-parameters;
+
+	// Physical sub-models
+	@Soret    					true;
+	@Radiation					true;
+	@EnvironmentTemperature		293 K;
+
+	@SpeciesBundling			0.01;
+
+    // Soot section	
+	@PolimiSoot		            polimi-soot;
+}
+
+Dictionary polimi-soot
+{
+    // Label indicating the soot particles (default: BIN)
+    @SootLabel  BIN;
+
+    // Fractal dimension of soot particles (default: 1.8)
+    @FractalDimension   1.8;
+
+    // Index of minimum discrete section which is considered soot (default: 5)
+    @SootMinimumSectionSphericalParticles       5;
+
+    // Index of minimum discrete section from which to apply the fractal dimension (default: 13)
+    @SootMinimumSectionAggregates   13;
+
+    // Linear density: BINstart DENSITYstart BINend DENSITYend (default: 10 1500. 20 1700.)
+    // @Density    5 1100. 25 1850.;
+    @Density    510. 100. -0.52;
+
+    // Write the soot particle size distribution function (PSDF) on file (default: true)
+    @WritePSDF  true;
+
+    // Threshold (soot volume fraction) for writing the PSDF on file (default: 1e-11)
+    @ThresholdForPSDF   1e-11;
+
+    // Radiative heat transfer from soot (default true)
+    @RadiativeHeatTransfer    	true;
+
+    // Planck mean absorption coefficient for soot: Smooke (default) | Kent | Sazhin
+    @PlanckCoefficient      	Smooke;
+
+    // Physical diffusion for soot particles (default: true)
+    @PhysicalDiffusionBinToCut	4;
+
+    // Thermophoretic effect for soot sections (default: true)
+    @ThermophoreticEffect   	true;
+
+    // Artificial reduction coefficient (applied to all BINs representing spherical particles and aggregates)
+    @PhysicalDiffusionReductionCoefficient	1.;
+}
+
+Dictionary fuel-stream
+{
+	@Masses       C2H4 $Y1FUEL$
+				  H2O $Y1H2O$
+				  O2  $Y1O2$
+				  N2  $Y1N2$; 
+
+	@Temperature	$TFUEL$ K;
+	@Pressure		1 atm;
+}
+
+Dictionary oxidizer-stream
+{
+	@Masses		H2O	$Y2H2O$
+      			O2	$YO2$
+      			N2 	$Y2N2$;
+					
+	@Temperature	$TOX$ K;
+	@Pressure		1 atm;
+}
+
+Dictionary peak-mixture
+{
+	@Moles		CO2 0.15 
+				H2O 0.15 
+				N2  0.70;
+					
+	@Temperature	2300 K;
+
+	@Pressure	1 atm;
+}
+
+Dictionary grid
+{
+	@Length			1.5 cm;
+	@InitialPoints	80;				
+	@Type			equispaced;
+	
+	@MaxPoints				120;		
+	@MaxAdaptivePoints		30;
+	@GradientCoefficient	0.05;
+	@CurvatureCoefficient	0.5;
+
+	@Threshold		1e-5;		
+}
+
+Dictionary dae-parameters
+{
+	@DaeSolver		OpenSMOKE++;
+	@RelativeTolerance	1e-6;
+	@AbsoluteTolerance	1e-12;
+}
+
+
+Dictionary definition
+{
+    @Alpha $ALPHA$;
+    @Beta  $BETA$;
+    @Gamma $GAMMA$;
+
+    @StrainRate $STRAINRATE$ 1/s;
+}
