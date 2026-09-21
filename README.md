@@ -264,13 +264,50 @@ The equivalent `--option=value` syntax is also supported:
 | `--help`, `-h` | Print usage information. |
 
 If `NA`, `NB`, and `NG` values are provided for `alpha`, `beta`, and `gamma`,
-the generator creates:
+the generator creates the full analysis grid:
 
 ```text
 NC = NA * NB * NG
 ```
 
-independent cases.
+case folders.
+
+### Special handling of `alpha = 0`
+
+The `alpha = 0` cases are physically degenerate in this model.  When
+`alpha = 0`, no steam and no additional air are added, so the values of `beta`
+and `gamma` do not affect the stream definition or the resulting flame
+solution.  Therefore all cases
+
+```text
+Alpha_0_Beta_YYY_Gamma_ZZZ
+```
+
+are equivalent to:
+
+```text
+Alpha_0_Beta_0_Gamma_0
+```
+
+To avoid wasting CPU time, the generator still creates every requested
+`alpha = 0` case folder for plotting and post-processing, but only schedules
+`Alpha_0_Beta_0_Gamma_0` for execution.  The redundant folders contain an
+`alias_of.txt` file pointing to the canonical case.  After the canonical case
+finishes, `RunAll.sh` copies the canonical `StepXX/Output` folders into the
+redundant `alpha = 0` folders and marks them as completed in
+`CampaignStatus.csv`.
+
+If any `alpha = 0` case is requested but the user did not include
+`beta = 0` and `gamma = 0` in the input lists, the generator automatically adds
+the canonical `Alpha_0_Beta_0_Gamma_0` case because it is required as the
+source solution for the aliases.
+
+The campaign-definition CSV includes two diagnostic columns:
+
+| Column | Meaning |
+|---|---|
+| `simulation_mode` | `computed` for cases that are actually simulated, `alias` for redundant `alpha = 0` cases. |
+| `source_case` | Canonical case from which an alias receives its output files. Empty for computed cases. |
 
 ## Generated Input Files and Placeholders
 
@@ -364,15 +401,16 @@ For example, to run at most 18 cases simultaneously:
 ./RunAll.sh 18
 ```
 
-`RunAll.sh` schedules all generated cases, keeps at most `NP` active background
-jobs, and continuously updates the campaign status.
+`RunAll.sh` schedules all computed cases, keeps at most `NP` active background
+jobs, copies canonical outputs into any `alpha = 0` aliases, and continuously
+updates the campaign status.
 
 Campaign-level diagnostics:
 
 | File | Meaning |
 |---|---|
 | `Campaign.log` | Campaign-level log. |
-| `CampaignStatus.csv` | Status table for all cases. |
+| `CampaignStatus.csv` | Status table for all generated cases, including aliases and their `source_case`. |
 
 The generated `Run.sh` and `RunAll.sh` files are marked executable by the C++
 generator.  If files are copied to another machine and lose executable

@@ -829,6 +829,8 @@ def summarize_campaign_step(
                     "exit_code": status_row.get("exit_code"),
                 }
             )
+            if "source_case" in data.campaign_status.columns:
+                row["source_case"] = status_row.get("source_case")
 
         row.update({column: _nan() for column in metric_columns})
 
@@ -864,6 +866,8 @@ def summarize_campaign_step(
     leading_columns = ["alpha", "beta", "gamma"]
     if include_status:
         leading_columns.extend(["case", "status", "exit_code"])
+        if "source_case" in data.campaign_status.columns:
+            leading_columns.append("source_case")
 
     return pd.DataFrame(rows, columns=leading_columns + metric_columns)
 
@@ -980,7 +984,15 @@ def _finite_range_text(values: Any) -> str:
 
 
 def _available_metric_columns(summary: Any) -> list[str]:
-    parameters = {"alpha", "beta", "gamma", "case", "status", "exit_code"}
+    parameters = {
+        "alpha",
+        "beta",
+        "gamma",
+        "case",
+        "status",
+        "exit_code",
+        "source_case",
+    }
     return [column for column in summary.columns if column not in parameters]
 
 

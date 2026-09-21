@@ -31,7 +31,14 @@ struct CalculationResult
     double oxidizerH2OMassFraction = 0.;
     double oxidizerO2MassFraction = 0.;
     double oxidizerN2MassFraction = 0.;
+    bool runSimulation = true;
+    std::string sourceCaseName;
 };
+
+bool IsNearlyZero(const double value)
+{
+    return std::abs(value) <= 1.e-14;
+}
 
 std::string EscapeJsonString(const std::string& value)
 {
@@ -103,6 +110,11 @@ std::string EscapeCsvString(const std::string& value)
 
 std::string NumberToPathToken(const double value)
 {
+    if (IsNearlyZero(value))
+    {
+        return "0";
+    }
+
     std::ostringstream token;
     token << value;
     return token.str();
@@ -110,6 +122,11 @@ std::string NumberToPathToken(const double value)
 
 std::string NumberToText(const double value)
 {
+    if (IsNearlyZero(value))
+    {
+        return "0";
+    }
+
     std::ostringstream text;
     text << value;
     return text.str();
@@ -156,6 +173,23 @@ std::string CaseDirectoryName(const CalculationResult& result)
            "_Gamma_" + NumberToPathToken(result.gamma);
 }
 
+std::string CanonicalAlphaZeroCaseName()
+{
+    return "Alpha_0_Beta_0_Gamma_0";
+}
+
+bool IsAlphaZeroCanonicalCase(const CalculationResult& result)
+{
+    return IsNearlyZero(result.alpha) &&
+           IsNearlyZero(result.beta) &&
+           IsNearlyZero(result.gamma);
+}
+
+bool IsAlphaZeroAliasCase(const CalculationResult& result)
+{
+    return IsNearlyZero(result.alpha) && !IsAlphaZeroCanonicalCase(result);
+}
+
 std::string ReadTextFile(const std::filesystem::path& fileName)
 {
     std::ifstream input(fileName);
@@ -197,6 +231,27 @@ void WriteDefinitionJsonFile(const CalculationResult& result,
     }
 
     jsonFile << jsonText << '\n';
+}
+
+void WriteAliasMetadataFile(const CalculationResult& result)
+{
+    if (result.runSimulation)
+    {
+        return;
+    }
+
+    const std::filesystem::path caseDirectory = BuildCaseDirectory(result);
+    std::filesystem::create_directories(caseDirectory);
+
+    const std::filesystem::path aliasFile = caseDirectory / "alias_of.txt";
+    std::ofstream output(aliasFile);
+    if (!output)
+    {
+        throw std::runtime_error("Unable to open alias metadata file for writing: " +
+                                 aliasFile.string());
+    }
+
+    output << result.sourceCaseName << '\n';
 }
 
 bool GetTemplateStepNumber(const std::filesystem::path& templateFile,
@@ -558,6 +613,32 @@ void WriteRunAllScript(const std::vector<CalculationResult>& results)
     }
 
     script << ")\n\n"
+           << "RUN_CASES=(\n";
+
+    for (const CalculationResult& result : results)
+    {
+        if (result.runSimulation)
+        {
+            script << "    \"" << CaseDirectoryName(result) << "\"\n";
+        }
+    }
+
+    script << ")\n\n"
+           << "ALIAS_CASES=(\n";
+
+    for (const CalculationResult& result : results)
+    {
+        if (!result.runSimulation)
+        {
+            script << "    \""
+                   << CaseDirectoryName(result)
+                   << "|"
+                   << result.sourceCaseName
+                   << "\"\n";
+        }
+    }
+
+    script << ")\n\n"
            << "timestamp() {\n"
            << "    date \"+%Y-%m-%d %H:%M:%S\"\n"
            << "}\n\n"
@@ -574,14 +655,15 @@ void WriteRunAllScript(const std::vector<CalculationResult>& results)
            << "    fi\n"
            << "}\n\n"
            << "write_status() {\n"
-           << "    echo \"case,status,last_update,pid,exit_code,max_temperature_K\" > \"$STATUS_CSV\"\n"
+           << "    echo \"case,status,last_update,pid,exit_code,max_temperature_K,source_case\" > \"$STATUS_CSV\"\n"
            << "    local status_case_directory\n"
            << "    for status_case_directory in \"${CASES[@]}\"; do\n"
            << "        local status=\"PENDING\"\n"
            << "        local last_update=\"\"\n"
            << "        local pid=\"\"\n"
            << "        local exit_code=\"\"\n\n"
-           << "        local max_temperature=\"\"\n\n"
+           << "        local max_temperature=\"\"\n"
+           << "        local source_case=\"\"\n\n"
            << "        if [ -f \"$status_case_directory/status.txt\" ]; then\n"
            << "            status=$(read_case_file \"$status_case_directory/status.txt\")\n"
            << "        fi\n"
@@ -597,8 +679,13 @@ void WriteRunAllScript(const std::vector<CalculationResult>& results)
            << "        if [ -f \"$status_case_directory/max_temperature_K.txt\" ]; then\n"
            << "            max_temperature=$(read_case_file \"$status_case_directory/max_temperature_K.txt\")\n"
            << "        fi\n\n"
-           << "        printf '\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\\n' \\\n"
-           << "            \"$status_case_directory\" \"$status\" \"$last_update\" \"$pid\" \"$exit_code\" \"$max_temperature\" \\\n"
+           << "        if [ -f \"$status_case_directory/source_case.txt\" ]; then\n"
+           << "            source_case=$(read_case_file \"$status_case_directory/source_case.txt\")\n"
+           << "        elif [ -f \"$status_case_directory/alias_of.txt\" ]; then\n"
+           << "            source_case=$(read_case_file \"$status_case_directory/alias_of.txt\")\n"
+           << "        fi\n\n"
+           << "        printf '\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\\n' \\\n"
+           << "            \"$status_case_directory\" \"$status\" \"$last_update\" \"$pid\" \"$exit_code\" \"$max_temperature\" \"$source_case\" \\\n"
            << "            >> \"$STATUS_CSV\"\n"
            << "    done\n"
            << "}\n\n"
@@ -620,9 +707,57 @@ void WriteRunAllScript(const std::vector<CalculationResult>& results)
            << "    echo \"$pid\" > \"$case_directory/pid.txt\"\n"
            << "    log_message \"Started $case_directory with PID $pid\"\n"
            << "}\n\n"
+           << "copy_alias_outputs() {\n"
+           << "    local alias_case_directory=\"$1\"\n"
+           << "    local source_case_directory=\"$2\"\n"
+           << "    local source_exit_code\n"
+           << "    source_exit_code=$(read_case_file \"$source_case_directory/exit_code.txt\")\n\n"
+           << "    echo \"$source_case_directory\" > \"$alias_case_directory/source_case.txt\"\n"
+           << "    if [ \"$source_exit_code\" != \"0\" ]; then\n"
+           << "        echo \"FAILED ALIAS_SOURCE $source_case_directory\" > \"$alias_case_directory/status.txt\"\n"
+           << "        echo \"${source_exit_code:-1}\" > \"$alias_case_directory/exit_code.txt\"\n"
+           << "        timestamp > \"$alias_case_directory/last_update.txt\"\n"
+           << "        log_message \"Alias $alias_case_directory not completed because source $source_case_directory failed\"\n"
+           << "        return 1\n"
+           << "    fi\n\n"
+           << "    local copied_outputs=0\n"
+           << "    local source_output_directory\n"
+           << "    for source_output_directory in \"$source_case_directory\"/Step*/Output; do\n"
+           << "        [ -d \"$source_output_directory\" ] || continue\n"
+           << "        local source_step_directory\n"
+           << "        local step_directory\n"
+           << "        source_step_directory=$(dirname \"$source_output_directory\")\n"
+           << "        step_directory=$(basename \"$source_step_directory\")\n"
+           << "        mkdir -p \"$alias_case_directory/$step_directory\"\n"
+           << "        rm -rf \"$alias_case_directory/$step_directory/Output\"\n"
+           << "        cp -a \"$source_output_directory\" \"$alias_case_directory/$step_directory/Output\"\n"
+           << "        if [ -f \"$source_step_directory/max_temperature_K.txt\" ]; then\n"
+           << "            cp -a \"$source_step_directory/max_temperature_K.txt\" \"$alias_case_directory/$step_directory/max_temperature_K.txt\"\n"
+           << "        fi\n"
+           << "        copied_outputs=$((copied_outputs + 1))\n"
+           << "    done\n\n"
+           << "    if [ \"$copied_outputs\" -eq 0 ]; then\n"
+           << "        echo \"FAILED ALIAS_MISSING_OUTPUT\" > \"$alias_case_directory/status.txt\"\n"
+           << "        echo \"1\" > \"$alias_case_directory/exit_code.txt\"\n"
+           << "        timestamp > \"$alias_case_directory/last_update.txt\"\n"
+           << "        log_message \"Alias $alias_case_directory has no source Output folders in $source_case_directory\"\n"
+           << "        return 1\n"
+           << "    fi\n\n"
+           << "    if [ -f \"$source_case_directory/max_temperature_K.txt\" ]; then\n"
+           << "        cp -a \"$source_case_directory/max_temperature_K.txt\" \"$alias_case_directory/max_temperature_K.txt\"\n"
+           << "    fi\n"
+           << "    if [ -f \"$source_case_directory/StepStatus.csv\" ]; then\n"
+           << "        cp -a \"$source_case_directory/StepStatus.csv\" \"$alias_case_directory/StepStatus.csv\"\n"
+           << "    fi\n"
+           << "    echo \"COMPLETED\" > \"$alias_case_directory/status.txt\"\n"
+           << "    echo \"0\" > \"$alias_case_directory/exit_code.txt\"\n"
+           << "    : > \"$alias_case_directory/pid.txt\"\n"
+           << "    timestamp > \"$alias_case_directory/last_update.txt\"\n"
+           << "    log_message \"Completed alias $alias_case_directory from $source_case_directory\"\n"
+           << "}\n\n"
            << ": > \"$CAMPAIGN_LOG\"\n"
-           << "log_message \"Campaign started with NP=$NP and NC=${#CASES[@]}\"\n\n"
-           << "for case_directory in \"${CASES[@]}\"; do\n"
+           << "log_message \"Campaign started with NP=$NP, NC=${#CASES[@]}, executable=${#RUN_CASES[@]}, aliases=${#ALIAS_CASES[@]}\"\n\n"
+           << "for case_directory in \"${RUN_CASES[@]}\"; do\n"
            << "    if [ ! -f \"$case_directory/Run.sh\" ]; then\n"
            << "        log_message \"Run.sh was not found in $case_directory\"\n"
            << "        exit 1\n"
@@ -639,8 +774,19 @@ void WriteRunAllScript(const std::vector<CalculationResult>& results)
            << "    : > \"$case_directory/max_temperature_K.txt\"\n"
            << "    timestamp > \"$case_directory/last_update.txt\"\n"
            << "done\n\n"
+           << "for alias_definition in \"${ALIAS_CASES[@]}\"; do\n"
+           << "    alias_case_directory=\"${alias_definition%%|*}\"\n"
+           << "    source_case_directory=\"${alias_definition#*|}\"\n"
+           << "    mkdir -p \"$alias_case_directory\"\n"
+           << "    echo \"PENDING_ALIAS\" > \"$alias_case_directory/status.txt\"\n"
+           << "    : > \"$alias_case_directory/pid.txt\"\n"
+           << "    : > \"$alias_case_directory/exit_code.txt\"\n"
+           << "    : > \"$alias_case_directory/max_temperature_K.txt\"\n"
+           << "    echo \"$source_case_directory\" > \"$alias_case_directory/source_case.txt\"\n"
+           << "    timestamp > \"$alias_case_directory/last_update.txt\"\n"
+           << "done\n\n"
            << "write_status\n\n"
-           << "for case_directory in \"${CASES[@]}\"; do\n"
+           << "for case_directory in \"${RUN_CASES[@]}\"; do\n"
            << "    while [ \"$(active_jobs)\" -ge \"$NP\" ]; do\n"
            << "        write_status\n"
            << "        sleep 5\n"
@@ -653,6 +799,13 @@ void WriteRunAllScript(const std::vector<CalculationResult>& results)
            << "    sleep 5\n"
            << "done\n\n"
            << "wait\n"
+           << "write_status\n\n"
+           << "for alias_definition in \"${ALIAS_CASES[@]}\"; do\n"
+           << "    alias_case_directory=\"${alias_definition%%|*}\"\n"
+           << "    source_case_directory=\"${alias_definition#*|}\"\n"
+           << "    copy_alias_outputs \"$alias_case_directory\" \"$source_case_directory\" || true\n"
+           << "    write_status\n"
+           << "done\n\n"
            << "write_status\n\n"
            << "failed=0\n"
            << "for final_case_directory in \"${CASES[@]}\"; do\n"
@@ -934,7 +1087,9 @@ void WriteCsvFile(const std::string& fileName,
         << "fuel_Y_N2,"
         << "oxidizer_Y_H2O,"
         << "oxidizer_Y_O2,"
-        << "oxidizer_Y_N2\n";
+        << "oxidizer_Y_N2,"
+        << "simulation_mode,"
+        << "source_case\n";
 
     for (const CalculationResult& result : results)
     {
@@ -954,7 +1109,9 @@ void WriteCsvFile(const std::string& fileName,
             << result.fuelN2MassFraction << ','
             << result.oxidizerH2OMassFraction << ','
             << result.oxidizerO2MassFraction << ','
-            << result.oxidizerN2MassFraction << '\n';
+            << result.oxidizerN2MassFraction << ','
+            << (result.runSimulation ? "computed" : "alias") << ','
+            << EscapeCsvString(result.sourceCaseName) << '\n';
     }
 }
 
@@ -1085,6 +1242,9 @@ int main(const int argc, char* argv[])
 
     try
     {
+        bool alphaZeroRequested = false;
+        bool canonicalAlphaZeroRequested = false;
+
         for (const double alpha : alphas)
         {
             for (const double beta : betas)
@@ -1100,15 +1260,45 @@ int main(const int argc, char* argv[])
                                                            strainRate,
                                                            distance,
                                                            &result);
+                    if (IsNearlyZero(alpha))
+                    {
+                        alphaZeroRequested = true;
+                        if (IsAlphaZeroCanonicalCase(result))
+                        {
+                            canonicalAlphaZeroRequested = true;
+                        }
+                        else if (IsAlphaZeroAliasCase(result))
+                        {
+                            result.runSimulation = false;
+                            result.sourceCaseName = CanonicalAlphaZeroCaseName();
+                        }
+                    }
+
                     results.push_back(result);
                     jsonTexts.push_back(jsonText);
                 }
             }
         }
 
+        if (alphaZeroRequested && !canonicalAlphaZeroRequested)
+        {
+            CalculationResult canonicalResult;
+            const std::string canonicalJsonText = Calculate(fuelName,
+                                                            fuelMolecularWeight,
+                                                            0.,
+                                                            0.,
+                                                            0.,
+                                                            strainRate,
+                                                            distance,
+                                                            &canonicalResult);
+            results.push_back(canonicalResult);
+            jsonTexts.push_back(canonicalJsonText);
+        }
+
         for (std::size_t i = 0; i < results.size(); ++i)
         {
             WriteDefinitionJsonFile(results[i], jsonTexts[i]);
+            WriteAliasMetadataFile(results[i]);
             WriteStepInputFiles(results[i]);
         }
 
