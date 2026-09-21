@@ -314,10 +314,35 @@ def _prefix_profile_columns(profile: Any, prefix: str) -> Any:
     return profile.rename(columns={column: f"{prefix}{column}" for column in profile.columns})
 
 
+def _prefix_profile_columns_except(profile: Any, prefix: str, keep_unprefixed: set[str]) -> Any:
+    if not prefix:
+        return profile
+    return profile.rename(
+        columns={
+            column: column if column in keep_unprefixed else f"{prefix}{column}"
+            for column in profile.columns
+        }
+    )
+
+
 def _prefix_column_metadata(columns: Any, prefix: str, source: str) -> Any:
     annotated = _add_column_source(columns, source)
     if prefix:
         annotated["label"] = annotated["label"].map(lambda label: f"{prefix}{label}")
+    return annotated
+
+
+def _prefix_column_metadata_except(
+    columns: Any,
+    prefix: str,
+    source: str,
+    keep_unprefixed: set[str],
+) -> Any:
+    annotated = _add_column_source(columns, source)
+    if prefix:
+        annotated["label"] = annotated["label"].map(
+            lambda label: label if label in keep_unprefixed else f"{prefix}{label}"
+        )
     return annotated
 
 
@@ -439,6 +464,7 @@ def load_campaign_step(
         case_directory = root / case_name
         output_directory = case_directory / step_name / "Output"
         solution_file = output_directory / SOLUTION_FILE_NAME
+        profile = None
 
         if not solution_file.is_file():
             missing_files.append(solution_file)
@@ -452,26 +478,24 @@ def load_campaign_step(
                 ),
                 missing,
             )
-            continue
-
-        try:
-            profile, current_columns = read_solution_file(solution_file, columns=columns)
-        except Exception as exc:
-            _handle_case_failure(
-                load_failures,
-                CaseFailure(
-                    case=case_name,
-                    source="final",
-                    reason="incomplete result file",
-                    file=solution_file,
-                    detail=str(exc),
-                ),
-                missing,
-            )
-            continue
-
-        if column_metadata is None:
-            column_metadata = _add_column_source(current_columns, "final")
+        else:
+            try:
+                profile, current_columns = read_solution_file(solution_file, columns=columns)
+            except Exception as exc:
+                _handle_case_failure(
+                    load_failures,
+                    CaseFailure(
+                        case=case_name,
+                        source="final",
+                        reason="incomplete result file",
+                        file=solution_file,
+                        detail=str(exc),
+                    ),
+                    missing,
+                )
+            else:
+                if column_metadata is None:
+                    column_metadata = _add_column_source(current_columns, "final")
 
         if include_soot:
             soot_file = output_directory / SOOT_FILE_NAME
@@ -481,17 +505,43 @@ def load_campaign_step(
                         soot_file,
                         columns=soot_columns,
                     )
-                    soot_profile = _prefix_profile_columns(soot_profile, soot_prefix)
+                    if profile is None:
+                        soot_profile = _prefix_profile_columns_except(
+                            soot_profile,
+                            soot_prefix,
+                            {"x"},
+                        )
+                    else:
+                        if "x" in soot_profile.columns:
+                            soot_profile = soot_profile.drop(columns=["x"])
+                            current_soot_columns = current_soot_columns.loc[
+                                current_soot_columns["label"] != "x"
+                            ].copy()
+                        soot_profile = _prefix_profile_columns(soot_profile, soot_prefix)
                     soot_profile = soot_profile.reset_index(drop=True)
-                    profile = pd.concat([profile.reset_index(drop=True), soot_profile], axis=1)
+                    if profile is None:
+                        profile = soot_profile
+                    else:
+                        profile = pd.concat(
+                            [profile.reset_index(drop=True), soot_profile],
+                            axis=1,
+                        )
                     soot_profiles[case_name] = soot_profile
 
                     if soot_column_metadata is None:
-                        soot_column_metadata = _prefix_column_metadata(
-                            current_soot_columns,
-                            soot_prefix,
-                            "soot",
-                        )
+                        if profile is soot_profile:
+                            soot_column_metadata = _prefix_column_metadata_except(
+                                current_soot_columns,
+                                soot_prefix,
+                                "soot",
+                                {"x"},
+                            )
+                        else:
+                            soot_column_metadata = _prefix_column_metadata(
+                                current_soot_columns,
+                                soot_prefix,
+                                "soot",
+                            )
                 except Exception as exc:
                     if missing_soot != "ignore":
                         _handle_case_failure(
@@ -516,8 +566,11 @@ def load_campaign_step(
                             reason="missing soot result file",
                             file=soot_file,
                         ),
-                        missing_soot,
-                    )
+                            missing_soot,
+                        )
+
+        if profile is None:
+            continue
 
         definition = _read_definition(case_directory)
         metadata = _case_metadata_from_definition(definition)
@@ -1250,13 +1303,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         requested_as_text = [str(item) for item in requested_columns]
         if args.coordinate not in requested_as_text:
             requested_columns.insert(0, args.coordinate)
+    requested_soot_columns = _split_columns(args.soot_columns)
+    if (
+        args.include_soot
+        and (args.metrics_output or args.plot_metric)
+        and requested_soot_columns is not None
+    ):
+        requested_soot_as_text = [str(item) for item in requested_soot_columns]
+        if args.coordinate not in requested_soot_as_text:
+            requested_soot_columns.insert(0, args.coordinate)
 
     data = load_campaign_step(
         args.campaign_directory,
         args.step,
         columns=requested_columns,
         include_soot=args.include_soot,
-        soot_columns=_split_columns(args.soot_columns),
+        soot_columns=requested_soot_columns,
         soot_prefix=args.soot_prefix,
         combine=args.combine,
         missing=args.missing,
