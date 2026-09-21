@@ -945,6 +945,22 @@ def _available_metric_columns(summary: Any) -> list[str]:
     return [column for column in summary.columns if column not in parameters]
 
 
+def _variable_from_metric_name(metric: Optional[str], coordinate: str) -> Optional[str]:
+    if not metric:
+        return None
+
+    if metric.endswith("_max"):
+        return metric[:-4]
+    if metric.endswith("_integral"):
+        return metric[: -len("_integral")]
+
+    location_suffix = f"_{coordinate}_at_max"
+    if metric.endswith(location_suffix):
+        return metric[: -len(location_suffix)]
+
+    return None
+
+
 def plot_metric_slices(
     summary: Any,
     metric: str,
@@ -1299,6 +1315,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     requested_columns = _split_columns(args.columns)
+    plot_variable = _variable_from_metric_name(args.plot_metric, args.coordinate)
     if (args.metrics_output or args.plot_metric) and requested_columns is not None:
         requested_as_text = [str(item) for item in requested_columns]
         if args.coordinate not in requested_as_text:
@@ -1312,6 +1329,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         requested_soot_as_text = [str(item) for item in requested_soot_columns]
         if args.coordinate not in requested_soot_as_text:
             requested_soot_columns.insert(0, args.coordinate)
+        if (
+            plot_variable is not None
+            and args.soot_prefix
+            and plot_variable.startswith(args.soot_prefix)
+        ):
+            soot_plot_variable = plot_variable[len(args.soot_prefix):]
+            if soot_plot_variable not in requested_soot_as_text:
+                requested_soot_columns.append(soot_plot_variable)
+
+    effective_missing_soot = args.missing_soot
+    if (
+        effective_missing_soot == "ignore"
+        and plot_variable is not None
+        and args.soot_prefix
+        and plot_variable.startswith(args.soot_prefix)
+    ):
+        effective_missing_soot = "warn"
 
     data = load_campaign_step(
         args.campaign_directory,
@@ -1322,14 +1356,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         soot_prefix=args.soot_prefix,
         combine=args.combine,
         missing=args.missing,
-        missing_soot=args.missing_soot,
+        missing_soot=effective_missing_soot,
     )
 
     metrics = None
     if args.metrics_output or args.plot_metric:
+        metrics_variables = _split_columns(args.metrics_variables)
+        if metrics_variables is None and plot_variable is not None:
+            metrics_variables = _first_profile_columns(data)
+            if plot_variable not in metrics_variables:
+                metrics_variables.append(plot_variable)
+
         metrics = summarize_campaign_step(
             data,
-            variables=_split_columns(args.metrics_variables),
+            variables=metrics_variables,
             coordinate=args.coordinate,
             include_status=args.include_status,
         )
