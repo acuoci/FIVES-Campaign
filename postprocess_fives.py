@@ -274,6 +274,22 @@ def read_solution_file(
     if profile.empty:
         raise ValueError(f"Result file contains no profile rows: {path}")
 
+    # OpenSMOKE++ profiles are numeric tables.  Force numeric dtype here so a
+    # single nonstandard token, or a Fortran-style D exponent, cannot silently
+    # turn a requested column into object data and later produce NaN metrics.
+    for column in profile.columns:
+        if profile[column].dtype == "object":
+            profile[column] = profile[column].astype(str).str.replace(
+                "D",
+                "E",
+                regex=False,
+            ).str.replace(
+                "d",
+                "E",
+                regex=False,
+            )
+        profile[column] = pd.to_numeric(profile[column], errors="coerce")
+
     profile.attrs["source_file"] = str(path)
     profile.attrs["column_units"] = {item["label"]: item["unit"] for item in parsed_columns}
     profile.attrs["column_tags"] = {item["label"]: item["tag"] for item in parsed_columns}
@@ -940,6 +956,22 @@ def _summary_case_labels(frame: Any) -> list[str]:
     return labels
 
 
+def _preview_case_labels(frame: Any, limit: int = 20) -> str:
+    labels = _summary_case_labels(frame)
+    if not labels:
+        return "none"
+    preview = ", ".join(labels[:limit])
+    if len(labels) > limit:
+        preview += f", ... ({len(labels) - limit} more)"
+    return preview
+
+
+def _finite_range_text(values: Any) -> str:
+    if values.empty:
+        return "min=n/a, max=n/a"
+    return f"min={float(values.min()):.6g}, max={float(values.max()):.6g}"
+
+
 def _available_metric_columns(summary: Any) -> list[str]:
     parameters = {"alpha", "beta", "gamma", "case", "status", "exit_code"}
     return [column for column in summary.columns if column not in parameters]
@@ -1011,6 +1043,7 @@ def plot_metric_slices(
         ``(figure, axes)`` from Matplotlib.
     """
 
+    pd = _require_pandas()
     plt, np = _require_matplotlib()
     from matplotlib.colors import LogNorm, Normalize
 
@@ -1047,14 +1080,29 @@ def plot_metric_slices(
         ncols = min(3, len(fixed_values))
     nrows = math.ceil(len(fixed_values) / ncols)
 
+    summary = summary.copy()
+    summary[metric] = pd.to_numeric(summary[metric], errors="coerce")
     metric_values = summary[metric].dropna()
     if log_scale:
         metric_values = metric_values.loc[metric_values > 0]
         if metric_values.empty:
-            problem_cases = ", ".join(_summary_case_labels(summary))
+            numeric_metric = summary[metric]
+            finite_values = numeric_metric.dropna()
+            nonpositive_cases = summary.loc[
+                numeric_metric.notna() & numeric_metric.le(0)
+            ]
+            missing_cases = summary.loc[numeric_metric.isna()]
+            if finite_values.empty:
+                detail = "all metric values are missing or non-numeric"
+                affected = summary
+            else:
+                detail = _finite_range_text(finite_values)
+                affected = nonpositive_cases
             raise ValueError(
                 f"Metric '{metric}' has no positive finite values for logarithmic "
-                f"plotting. Affected simulations: {problem_cases}"
+                f"plotting ({detail}; finite={len(finite_values)}, "
+                f"positive=0, missing={len(missing_cases)}). "
+                f"Affected simulations: {_preview_case_labels(affected)}"
             )
 
     if vmin is None:
