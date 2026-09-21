@@ -537,6 +537,19 @@ it computes:
 Cases that did not complete successfully are retained in the output and receive
 `NaN` for all metric columns.
 
+The post-processor is also robust to interrupted or incomplete runs.  If
+`CampaignStatus.csv` reports a case as completed but the requested
+`Solution.final.out` or `Solution.soot.out` file is missing, empty, truncated,
+or otherwise unreadable, that case is kept in the metrics CSV with `NaN` values.
+When `--summary` is used, the problematic case is reported explicitly, for
+example:
+
+```text
+Failed (temperature too low): Alpha_0.4_Beta_0_Gamma_0
+Failed (incomplete): Alpha_0.4_Beta_20_Gamma_0.4
+Failed (metric problem): Alpha_0.4_Beta_20_Gamma_0.8
+```
+
 Example:
 
 ```bash

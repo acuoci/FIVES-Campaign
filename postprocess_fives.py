@@ -29,6 +29,17 @@ CASE_PATTERN = re.compile(
 
 
 @dataclass
+class CaseFailure:
+    """Diagnostic record for one case-level loading or metric problem."""
+
+    case: str
+    source: str
+    reason: str
+    file: Optional[Path] = None
+    detail: str = ""
+
+
+@dataclass
 class CampaignStepData:
     """Container returned by ``load_campaign_step``.
 
@@ -44,6 +55,12 @@ class CampaignStepData:
         soot_columns: Metadata for optional ``Solution.soot.out`` columns.
         soot_profiles: Mapping from case folder name to optional soot DataFrames.
         missing_soot_files: Successful cases whose optional soot file was missing.
+        load_failures: Successful cases whose result files were missing,
+            incomplete, empty, or unreadable.
+        temperature_failures: Cases explicitly marked as low-temperature failures
+            in ``CampaignStatus.csv``.
+        metric_failures: Cases skipped during metric extraction because the
+            loaded profile did not contain the needed coordinate or variables.
     """
 
     root: Path
@@ -57,6 +74,9 @@ class CampaignStepData:
     soot_columns: Any = None
     soot_profiles: Optional[dict[str, Any]] = None
     missing_soot_files: Optional[list[Path]] = None
+    load_failures: Optional[list[CaseFailure]] = None
+    temperature_failures: Optional[list[str]] = None
+    metric_failures: Optional[list[CaseFailure]] = None
 
 
 def _require_pandas() -> Any:
@@ -138,6 +158,9 @@ def parse_solution_header(solution_file: str | Path) -> list[dict[str, Any]]:
     path = Path(solution_file)
     with path.open("r", encoding="utf-8") as handle:
         tokens = handle.readline().split()
+
+    if not tokens:
+        raise ValueError(f"No header found in result file: {path}")
 
     columns: list[dict[str, Any]] = []
     used_labels: set[str] = set()
@@ -230,6 +253,11 @@ def read_solution_file(
 
     pd = _require_pandas()
     path = Path(solution_file)
+    if not path.is_file():
+        raise FileNotFoundError(f"Result file not found: {path}")
+    if path.stat().st_size == 0:
+        raise ValueError(f"Result file is empty: {path}")
+
     parsed_columns = parse_solution_header(path)
     names = [item["label"] for item in parsed_columns]
     usecols = _resolve_requested_columns(parsed_columns, columns)
@@ -242,6 +270,9 @@ def read_solution_file(
         usecols=usecols,
         engine="c",
     )
+
+    if profile.empty:
+        raise ValueError(f"Result file contains no profile rows: {path}")
 
     profile.attrs["source_file"] = str(path)
     profile.attrs["column_units"] = {item["label"]: item["unit"] for item in parsed_columns}
@@ -313,6 +344,45 @@ def successful_cases(status: Any) -> Any:
     return status.loc[completed & clean_exit].copy()
 
 
+def _validate_missing_policy(policy: str, name: str) -> None:
+    if policy not in {"warn", "ignore", "raise"}:
+        raise ValueError(f"{name} must be one of: warn, ignore, raise")
+
+
+def _case_name_from_status_row(status_row: Any) -> str:
+    return str(status_row.get("case", ""))
+
+
+def _is_low_temperature_failure(status_row: Any) -> bool:
+    status_text = str(status_row.get("status", "")).upper()
+    exit_code = str(status_row.get("exit_code", "")).strip()
+    return "LOW_TEMPERATURE" in status_text or exit_code == "10"
+
+
+def low_temperature_cases(status: Any) -> list[str]:
+    """Return case names explicitly marked as low-temperature failures."""
+
+    cases: list[str] = []
+    for _, status_row in status.iterrows():
+        if _is_low_temperature_failure(status_row):
+            cases.append(_case_name_from_status_row(status_row))
+    return cases
+
+
+def _handle_case_failure(
+    failures: list[CaseFailure],
+    failure: CaseFailure,
+    policy: str,
+) -> None:
+    failures.append(failure)
+    if policy == "raise":
+        file_text = f" ({failure.file})" if failure.file is not None else ""
+        detail_text = f": {failure.detail}" if failure.detail else ""
+        raise RuntimeError(
+            f"{failure.reason} for {failure.case}{file_text}{detail_text}"
+        )
+
+
 def load_campaign_step(
     campaign_directory: str | Path,
     step: str | int,
@@ -344,17 +414,22 @@ def load_campaign_step(
     """
 
     pd = _require_pandas()
+    _validate_missing_policy(missing, "missing")
+    _validate_missing_policy(missing_soot, "missing_soot")
+
     root = Path(campaign_directory).expanduser().resolve()
     step_name = normalize_step(step)
 
     status = read_campaign_status(root)
     ok_cases = successful_cases(status)
+    temperature_failures = low_temperature_cases(status)
 
     profiles: dict[str, Any] = {}
     case_records: list[dict[str, Any]] = []
     combined_frames: list[Any] = []
     missing_files: list[Path] = []
     missing_soot_files: list[Path] = []
+    load_failures: list[CaseFailure] = []
     soot_profiles: dict[str, Any] = {}
     column_metadata = None
     soot_column_metadata = None
@@ -367,32 +442,82 @@ def load_campaign_step(
 
         if not solution_file.is_file():
             missing_files.append(solution_file)
+            _handle_case_failure(
+                load_failures,
+                CaseFailure(
+                    case=case_name,
+                    source="final",
+                    reason="missing result file",
+                    file=solution_file,
+                ),
+                missing,
+            )
             continue
 
-        profile, current_columns = read_solution_file(solution_file, columns=columns)
+        try:
+            profile, current_columns = read_solution_file(solution_file, columns=columns)
+        except Exception as exc:
+            _handle_case_failure(
+                load_failures,
+                CaseFailure(
+                    case=case_name,
+                    source="final",
+                    reason="incomplete result file",
+                    file=solution_file,
+                    detail=str(exc),
+                ),
+                missing,
+            )
+            continue
+
         if column_metadata is None:
             column_metadata = _add_column_source(current_columns, "final")
 
         if include_soot:
             soot_file = output_directory / SOOT_FILE_NAME
             if soot_file.is_file():
-                soot_profile, current_soot_columns = read_solution_file(
-                    soot_file,
-                    columns=soot_columns,
-                )
-                soot_profile = _prefix_profile_columns(soot_profile, soot_prefix)
-                soot_profile = soot_profile.reset_index(drop=True)
-                profile = pd.concat([profile.reset_index(drop=True), soot_profile], axis=1)
-                soot_profiles[case_name] = soot_profile
-
-                if soot_column_metadata is None:
-                    soot_column_metadata = _prefix_column_metadata(
-                        current_soot_columns,
-                        soot_prefix,
-                        "soot",
+                try:
+                    soot_profile, current_soot_columns = read_solution_file(
+                        soot_file,
+                        columns=soot_columns,
                     )
+                    soot_profile = _prefix_profile_columns(soot_profile, soot_prefix)
+                    soot_profile = soot_profile.reset_index(drop=True)
+                    profile = pd.concat([profile.reset_index(drop=True), soot_profile], axis=1)
+                    soot_profiles[case_name] = soot_profile
+
+                    if soot_column_metadata is None:
+                        soot_column_metadata = _prefix_column_metadata(
+                            current_soot_columns,
+                            soot_prefix,
+                            "soot",
+                        )
+                except Exception as exc:
+                    if missing_soot != "ignore":
+                        _handle_case_failure(
+                            load_failures,
+                            CaseFailure(
+                                case=case_name,
+                                source="soot",
+                                reason="incomplete soot result file",
+                                file=soot_file,
+                                detail=str(exc),
+                            ),
+                            missing_soot,
+                        )
             else:
                 missing_soot_files.append(soot_file)
+                if missing_soot != "ignore":
+                    _handle_case_failure(
+                        load_failures,
+                        CaseFailure(
+                            case=case_name,
+                            source="soot",
+                            reason="missing soot result file",
+                            file=soot_file,
+                        ),
+                        missing_soot,
+                    )
 
         definition = _read_definition(case_directory)
         metadata = _case_metadata_from_definition(definition)
@@ -436,24 +561,16 @@ def load_campaign_step(
             f"{len(missing_files)} successful case(s) do not contain "
             f"{step_name}/Output/{SOLUTION_FILE_NAME}"
         )
-        if missing == "raise":
-            raise FileNotFoundError(message)
         if missing == "warn":
             print("Warning:", message)
-        elif missing != "ignore":
-            raise ValueError("missing must be one of: warn, ignore, raise")
 
     if missing_soot_files:
         message = (
             f"{len(missing_soot_files)} successful case(s) do not contain "
             f"{step_name}/Output/{SOOT_FILE_NAME}"
         )
-        if missing_soot == "raise":
-            raise FileNotFoundError(message)
         if missing_soot == "warn":
             print("Warning:", message)
-        elif missing_soot != "ignore":
-            raise ValueError("missing_soot must be one of: warn, ignore, raise")
 
     if column_metadata is None:
         column_metadata = pd.DataFrame(
@@ -481,6 +598,9 @@ def load_campaign_step(
         soot_columns=soot_column_metadata,
         soot_profiles=soot_profiles,
         missing_soot_files=missing_soot_files,
+        load_failures=load_failures,
+        temperature_failures=temperature_failures,
+        metric_failures=[],
     )
 
 
@@ -509,17 +629,17 @@ def _resolve_summary_variables(
         selected = loaded_columns
     else:
         column_records = data.columns.to_dict("records")
-        selected = _resolve_requested_columns(column_records, variables)
+        try:
+            selected = _resolve_requested_columns(column_records, variables)
+        except KeyError:
+            # If every completed case failed to produce a readable profile, or
+            # one requested variable is absent from all readable profiles, still
+            # build the requested metric columns so the output CSV can report
+            # NaN for the affected simulations instead of aborting.
+            selected = [str(variable) for variable in variables]
 
     if selected is None:
         selected = []
-
-    missing = [variable for variable in selected if variable not in loaded_columns]
-    if missing:
-        raise KeyError(
-            "The following variables were requested but were not loaded in the "
-            "profiles: " + ", ".join(missing)
-        )
 
     if not include_coordinate_variable:
         selected = [variable for variable in selected if variable != coordinate]
@@ -596,6 +716,7 @@ def summarize_campaign_step(
     """
 
     pd = _require_pandas()
+    data.metric_failures = []
     selected_variables = _resolve_summary_variables(
         data,
         variables=variables,
@@ -637,7 +758,30 @@ def summarize_campaign_step(
 
         profile = data.profiles.get(case_name)
         if profile is not None:
-            row.update(_profile_metrics(profile, selected_variables, coordinate))
+            missing_variables = [
+                variable for variable in selected_variables if variable not in profile.columns
+            ]
+            if missing_variables:
+                data.metric_failures.append(
+                    CaseFailure(
+                        case=case_name,
+                        source="metrics",
+                        reason="metric variable not found",
+                        detail=", ".join(missing_variables),
+                    )
+                )
+
+            try:
+                row.update(_profile_metrics(profile, selected_variables, coordinate))
+            except Exception as exc:
+                data.metric_failures.append(
+                    CaseFailure(
+                        case=case_name,
+                        source="metrics",
+                        reason="metric extraction failed",
+                        detail=str(exc),
+                    )
+                )
 
         rows.append(row)
 
@@ -727,6 +871,27 @@ def _format_axis_value(value: Any) -> str:
     return str(value)
 
 
+def _summary_case_labels(frame: Any) -> list[str]:
+    labels: list[str] = []
+    for _, row in frame.iterrows():
+        if "case" in frame.columns:
+            labels.append(str(row["case"]))
+        else:
+            labels.append(
+                "Alpha_{alpha:g}_Beta_{beta:g}_Gamma_{gamma:g}".format(
+                    alpha=float(row["alpha"]),
+                    beta=float(row["beta"]),
+                    gamma=float(row["gamma"]),
+                )
+            )
+    return labels
+
+
+def _available_metric_columns(summary: Any) -> list[str]:
+    parameters = {"alpha", "beta", "gamma", "case", "status", "exit_code"}
+    return [column for column in summary.columns if column not in parameters]
+
+
 def plot_metric_slices(
     summary: Any,
     metric: str,
@@ -784,7 +949,14 @@ def plot_metric_slices(
     if fixed not in parameter_columns:
         raise ValueError("fixed must be one of: alpha, beta, gamma")
     if metric not in summary.columns:
-        raise KeyError(f"Metric column not found: {metric}")
+        available = _available_metric_columns(summary)
+        preview = ", ".join(available[:20])
+        if len(available) > 20:
+            preview += ", ..."
+        raise KeyError(
+            f"Metric column not found: {metric}. Available metric columns: "
+            f"{preview or 'none'}. Check --columns and --metrics-variables."
+        )
 
     free_parameters = [parameter for parameter in parameter_columns if parameter != fixed]
     x_column = x or free_parameters[0]
@@ -810,8 +982,10 @@ def plot_metric_slices(
     if log_scale:
         metric_values = metric_values.loc[metric_values > 0]
         if metric_values.empty:
+            problem_cases = ", ".join(_summary_case_labels(summary))
             raise ValueError(
-                f"Metric '{metric}' has no positive finite values for logarithmic plotting."
+                f"Metric '{metric}' has no positive finite values for logarithmic "
+                f"plotting. Affected simulations: {problem_cases}"
             )
 
     if vmin is None:
@@ -937,6 +1111,28 @@ def _split_columns(text: Optional[str]) -> Optional[list[str]]:
     if text is None or not text.strip():
         return None
     return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _print_case_list(prefix: str, cases: Sequence[str]) -> None:
+    for case_name in cases:
+        print(f"{prefix}: {case_name}")
+
+
+def _failure_summary_label(failure: CaseFailure) -> str:
+    if failure.source == "soot":
+        return "incomplete soot"
+    if failure.source == "metrics":
+        return "metric problem"
+    return "incomplete"
+
+
+def _print_failures(failures: Sequence[CaseFailure]) -> None:
+    for failure in failures:
+        print(f"Failed ({_failure_summary_label(failure)}): {failure.case}")
+        if failure.file is not None:
+            print(f"  file: {failure.file}")
+        if failure.detail:
+            print(f"  detail: {failure.detail}")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1081,19 +1277,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.plot_metric:
         if metrics is None:
             raise RuntimeError("Internal error: metrics were not computed before plotting.")
-        plot_metric_slices(
-            metrics,
-            metric=args.plot_metric,
-            fixed=args.plot_fixed,
-            x=args.plot_x,
-            y=args.plot_y,
-            output_file=args.plot_output,
-            cmap=args.plot_cmap,
-            vmin=args.plot_vmin,
-            vmax=args.plot_vmax,
-            annotate=args.plot_annotate,
-            log_scale=args.plot_log,
-        )
+        try:
+            plot_metric_slices(
+                metrics,
+                metric=args.plot_metric,
+                fixed=args.plot_fixed,
+                x=args.plot_x,
+                y=args.plot_y,
+                output_file=args.plot_output,
+                cmap=args.plot_cmap,
+                vmin=args.plot_vmin,
+                vmax=args.plot_vmax,
+                annotate=args.plot_annotate,
+                log_scale=args.plot_log,
+            )
+        except Exception as exc:
+            print(f"Error while plotting metric '{args.plot_metric}': {exc}")
+            if data.temperature_failures:
+                _print_case_list("Failed (temperature too low)", data.temperature_failures)
+            if data.load_failures:
+                _print_failures(data.load_failures)
+            if data.metric_failures:
+                _print_failures(data.metric_failures)
+            return 1
 
     if args.summary:
         print(f"Campaign: {data.root}")
@@ -1105,6 +1311,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"Soot profiles loaded: {len(data.soot_profiles or {})}")
             print(f"Missing soot files: {missing_soot_count}")
         print(f"Columns described: {len(data.columns)}")
+        if data.temperature_failures:
+            _print_case_list("Failed (temperature too low)", data.temperature_failures)
+        if data.load_failures:
+            _print_failures(data.load_failures)
+        if data.metric_failures:
+            _print_failures(data.metric_failures)
         if data.combined_profiles is not None:
             rows, cols = data.combined_profiles.shape
             print(f"Combined profile shape: {rows} rows x {cols} columns")
