@@ -380,8 +380,11 @@ def read_campaign_status(campaign_directory: str | Path) -> Any:
 def successful_cases(status: Any) -> Any:
     """Return rows marked as completed with exit code zero."""
 
-    completed = status["status"].eq("COMPLETED")
-    clean_exit = status["exit_code"].fillna("").astype(str).eq("0")
+    pd = _require_pandas()
+    completed = status["status"].fillna("").astype(str).str.upper().eq("COMPLETED")
+    numeric_exit_code = pd.to_numeric(status["exit_code"], errors="coerce")
+    textual_exit_code = status["exit_code"].fillna("").astype(str).str.strip()
+    clean_exit = numeric_exit_code.eq(0) | textual_exit_code.isin({"0", "0.0"})
     return status.loc[completed & clean_exit].copy()
 
 
@@ -397,7 +400,11 @@ def _case_name_from_status_row(status_row: Any) -> str:
 def _is_low_temperature_failure(status_row: Any) -> bool:
     status_text = str(status_row.get("status", "")).upper()
     exit_code = str(status_row.get("exit_code", "")).strip()
-    return "LOW_TEMPERATURE" in status_text or exit_code == "10"
+    try:
+        low_temperature_exit_code = float(exit_code) == 10.0
+    except ValueError:
+        low_temperature_exit_code = exit_code == "10"
+    return "LOW_TEMPERATURE" in status_text or low_temperature_exit_code
 
 
 def low_temperature_cases(status: Any) -> list[str]:
